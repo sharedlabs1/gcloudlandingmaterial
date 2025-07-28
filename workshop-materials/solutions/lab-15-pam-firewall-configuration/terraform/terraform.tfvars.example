@@ -1,0 +1,5 @@
+# terraform.tfvars.example for Lab 15: PAM Implementation and Firewall Configuration
+
+network = "default"
+
+# Add more variable values as needed

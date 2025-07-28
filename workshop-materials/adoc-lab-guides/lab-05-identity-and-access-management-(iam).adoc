@@ -1,0 +1,509 @@
+:toc:
+:toclevels: 3
+:numbered:
+:source-highlighter: highlightjs
+:icons: font
+
+= Lab 05: Identity and Access Management (IAM)
+
+== Lab Overview
+
+_Duration_: 60 minutes  
+_Difficulty_: Intermediate  
+_Prerequisites_: Completion of all previous labs
+
+=== Description
+Implement comprehensive Identity and Access Management (IAM) structure for TechCorp's landing zone with custom roles, service accounts, and hierarchical permission management.
+
+== Learning Objectives
+
+After completing this lab, you will be able to:
+
+• Design and implement custom IAM roles for TechCorp teams
+• Create service accounts with appropriate permissions
+• Configure hierarchical IAM bindings
+• Implement conditional access policies
+
+== Concept Overview (**IAM Hierarchy**: Organization, folder, and project-level permissions
+_Custom Role Design_: Principle of least privilege, role composition
+_Service Account Strategy_: Workload identity, key management, rotation
+_Conditional Access_: IAM conditions, context-aware access)
+
+=== Key Concepts
+
+_IAM Hierarchy_: Organization, folder, and project-level permissions
+_Custom Role Design_: Principle of least privilege, role composition
+_Service Account Strategy_: Workload identity, key management, rotation
+_Conditional Access_: IAM conditions, context-aware access
+
+== Pre-Lab Setup
+
+=== Environment Check
+[source,bash]
+----
+# Verify environment is ready
+cd ~/gcp-landing-zone-workshop/lab-05
+
+# Check project and authentication
+echo "Current project: $(gcloud config get-value project)"
+echo "Authenticated as: $(gcloud config get-value account)"
+
+# Verify previous lab completion (if applicable)
+ls -la ../lab-04/outputs/
+----
+
+=== Required Variables
+[source,bash]
+----
+# Set lab-specific variables
+export PROJECT_ID=$(gcloud config get-value project)
+export REGION="us-central1"
+export ZONE="us-central1-a"
+[cols="1,1,1", options="header"]
+|===
+export LAB_USER=$(gcloud config get-value account | cut -d@ -f1)
+|===
+
+# Lab-specific variables
+export LAB_PREFIX="lab05"
+export TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+----
+
+== Lab Steps
+
+=== Step-by-Step Implementation
+
+=== 1. Define Organizational Roles
+[source,bash]
+----
+# Create custom IAM roles
+cat > iam-roles.tf << 'EOL'
+# Custom role for environment admins
+resource "google_organization_iam_custom_role" "environment_admin" {
+  role_id     = "techcorp.environmentAdmin"
+  org_id      = var.organization_id
+  title       = "TechCorp Environment Admin"
+  description = "Custom role for environment-specific administrative tasks"
+  
+  permissions = [
+    "compute.instances.create",
+    "compute.instances.delete",
+    "compute.instances.get",
+    "compute.instances.list",
+    "compute.instances.start",
+    "compute.instances.stop",
+    "compute.disks.create",
+    "compute.disks.delete",
+    "compute.networks.get",
+    "compute.subnetworks.get",
+    "compute.subnetworks.use",
+    "iam.serviceAccounts.get",
+    "iam.serviceAccounts.list",
+    "iam.serviceAccounts.actAs",
+    "monitoring.metricDescriptors.list",
+    "monitoring.timeSeries.list",
+    "logging.logEntries.list"
+  ]
+}
+
+# Custom role for developers
+resource "google_organization_iam_custom_role" "developer" {
+  role_id     = "techcorp.developer"
+  org_id      = var.organization_id
+  title       = "TechCorp Developer"
+  description = "Custom role for developers with limited access"
+  
+  permissions = [
+    "compute.instances.get",
+    "compute.instances.list",
+    "compute.instances.start",
+    "compute.instances.stop",
+    "compute.disks.get",
+    "compute.disks.list",
+    "compute.networks.get",
+    "compute.subnetworks.get",
+    "storage.objects.get",
+    "storage.objects.list",
+    "monitoring.metricDescriptors.list",
+    "monitoring.timeSeries.list",
+    "logging.logEntries.list"
+  ]
+}
+
+# Custom role for security team
+resource "google_organization_iam_custom_role" "security_auditor" {
+  role_id     = "techcorp.securityAuditor"
+  org_id      = var.organization_id
+  title       = "TechCorp Security Auditor"
+  description = "Custom role for security auditing and compliance"
+  
+  permissions = [
+    "cloudasset.assets.searchAllResources",
+    "cloudasset.assets.searchAllIamPolicies",
+    "iam.roles.get",
+    "iam.roles.list",
+    "iam.serviceAccounts.get",
+    "iam.serviceAccounts.list",
+    "resourcemanager.projects.getIamPolicy",
+    "resourcemanager.folders.getIamPolicy",
+    "resourcemanager.organizations.getIamPolicy",
+    "compute.firewalls.get",
+    "compute.firewalls.list",
+    "securitycenter.findings.list",
+    "securitycenter.sources.get"
+  ]
+}
+EOL
+----
+
+=== 2. Create Service Accounts
+[source,bash]
+----
+cat >> main.tf << 'EOL'
+# Compute service account for web tier
+resource "google_service_account" "web_tier_sa" {
+  account_id   = "web-tier-compute"
+  display_name = "Web Tier Compute Service Account"
+  description  = "Service account for web tier compute instances"
+  project      = var.project_id
+}
+
+# Compute service account for app tier
+resource "google_service_account" "app_tier_sa" {
+  account_id   = "app-tier-compute"
+  display_name = "App Tier Compute Service Account"
+  description  = "Service account for application tier compute instances"
+  project      = var.project_id
+}
+
+# Service account for monitoring
+resource "google_service_account" "monitoring_sa" {
+  account_id   = "monitoring-agent"
+  display_name = "Monitoring Agent Service Account"
+  description  = "Service account for monitoring agents and data collection"
+  project      = var.project_id
+}
+
+# Service account for CI/CD
+resource "google_service_account" "cicd_sa" {
+  account_id   = "cicd-pipeline"
+  display_name = "CI/CD Pipeline Service Account"
+  description  = "Service account for CI/CD pipeline automation"
+  project      = var.project_id
+}
+
+# Service account for backup operations
+resource "google_service_account" "backup_sa" {
+  account_id   = "backup-operations"
+  display_name = "Backup Operations Service Account"
+  description  = "Service account for backup and disaster recovery operations"
+  project      = var.project_id
+}
+EOL
+----
+
+=== 3. Configure Service Account Permissions
+[source,bash]
+----
+cat >> main.tf << 'EOL'
+# Web tier service account permissions
+resource "google_project_iam_member" "web_tier_permissions" {
+  for_each = toset([
+    "roles/monitoring.metricWriter",
+    "roles/logging.logWriter",
+    "roles/storage.objectViewer"
+  ])
+  
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.web_tier_sa.email}"
+}
+
+# App tier service account permissions
+resource "google_project_iam_member" "app_tier_permissions" {
+  for_each = toset([
+    "roles/monitoring.metricWriter",
+    "roles/logging.logWriter",
+    "roles/storage.objectAdmin",
+    "roles/cloudsql.client"
+  ])
+  
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.app_tier_sa.email}"
+}
+
+# Monitoring service account permissions
+resource "google_project_iam_member" "monitoring_permissions" {
+  for_each = toset([
+    "roles/monitoring.metricWriter",
+    "roles/monitoring.dashboardEditor",
+    "roles/logging.logWriter"
+  ])
+  
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.monitoring_sa.email}"
+}
+
+# CI/CD service account permissions
+resource "google_project_iam_member" "cicd_permissions" {
+  for_each = toset([
+    "roles/compute.instanceAdmin",
+    "roles/iam.serviceAccountUser",
+    "roles/storage.admin",
+    "roles/cloudbuild.builds.editor"
+  ])
+  
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.cicd_sa.email}"
+}
+EOL
+----
+
+=== 4. Implement Hierarchical IAM Bindings
+[source,bash]
+----
+cat > iam-bindings.tf << 'EOL'
+# Organization-level IAM bindings
+resource "google_organization_iam_binding" "org_security_auditors" {
+  org_id = var.organization_id
+  role   = "organizations/${var.organization_id}/roles/techcorp.securityAuditor"
+  
+  members = [
+    "group:security-team@techcorp.com",
+    "user:security-lead@techcorp.com"
+  ]
+}
+
+# Folder-level IAM bindings for environments
+resource "google_folder_iam_binding" "dev_environment_admins" {
+  folder = google_folder.development.name
+  role   = "organizations/${var.organization_id}/roles/techcorp.environmentAdmin"
+  
+  members = [
+    "group:dev-team@techcorp.com",
+    "user:dev-lead@techcorp.com"
+  ]
+}
+
+resource "google_folder_iam_binding" "staging_environment_admins" {
+  folder = google_folder.staging.name
+  role   = "organizations/${var.organization_id}/roles/techcorp.environmentAdmin"
+  
+  members = [
+    "group:staging-team@techcorp.com",
+    "user:staging-lead@techcorp.com"
+  ]
+}
+
+resource "google_folder_iam_binding" "prod_environment_admins" {
+  folder = google_folder.production.name
+  role   = "roles/resourcemanager.folderViewer"
+  
+  members = [
+    "group:prod-team@techcorp.com",
+    "user:prod-lead@techcorp.com"
+  ]
+}
+
+# Project-level IAM bindings
+resource "google_project_iam_binding" "dev_developers" {
+  project = "${var.project_id}-dev"
+  role    = "organizations/${var.organization_id}/roles/techcorp.developer"
+  
+  members = [
+    "group:developers@techcorp.com"
+  ]
+}
+EOL
+----
+
+=== 5. Implement Conditional IAM Policies
+[source,bash]
+----
+cat >> iam-bindings.tf << 'EOL'
+# Conditional access for production environment (time-based)
+resource "google_project_iam_member" "prod_conditional_access" {
+  project = "${var.project_id}-prod"
+  role    = "roles/compute.admin"
+  member  = "group:prod-team@techcorp.com"
+  
+  condition {
+    title       = "Business Hours Access"
+    description = "Allow production access only during business hours"
+    expression  = "request.time.getHours() >= 8 && request.time.getHours() <= 18"
+  }
+}
+
+# Conditional access based on IP address
+resource "google_project_iam_member" "admin_ip_restricted" {
+  project = var.project_id
+  role    = "roles/owner"
+  member  = "group:administrators@techcorp.com"
+  
+  condition {
+    title       = "Corporate Network Access"
+    description = "Allow admin access only from corporate network"
+    expression  = "origin.ip in ['203.0.113.0/24', '198.51.100.0/24']"
+  }
+}
+EOL
+----
+
+=== 6. Configure Workload Identity
+[source,bash]
+----
+cat >> main.tf << 'EOL'
+# Enable Workload Identity for Kubernetes service accounts
+resource "google_service_account_iam_member" "workload_identity_web" {
+  service_account_id = google_service_account.web_tier_sa.name
+  role              = "roles/iam.workloadIdentityUser"
+  member            = "serviceAccount:${var.project_id}.svc.id.goog[web-namespace/web-ksa]"
+}
+
+resource "google_service_account_iam_member" "workload_identity_app" {
+  service_account_id = google_service_account.app_tier_sa.name
+  role              = "roles/iam.workloadIdentityUser"
+  member            = "serviceAccount:${var.project_id}.svc.id.goog[app-namespace/app-ksa]"
+}
+EOL
+----
+
+=== 7. Apply IAM Configuration
+[source,bash]
+----
+terraform plan
+terraform apply
+
+# Export IAM policy for documentation
+gcloud projects get-iam-policy $PROJECT_ID --format=json > outputs/iam-policy.json
+----
+
+== Expected Deliverables
+
+Upon successful completion of this lab, you should have:
+
+• Custom IAM roles for TechCorp organizational structure
+• Service accounts with appropriate permissions for different workloads
+• Hierarchical IAM bindings at organization, folder, and project levels
+• Conditional access policies with time and IP-based restrictions
+
+== Validation and Testing
+
+=== Validation Steps
+[source,bash]
+----
+# Create validation script for this lab
+cat > validate-lab-05.sh << 'EOL'
+#!/bin/bash
+
+echo "=== Lab 05 Validation ==="
+
+# Check custom roles creation
+if gcloud iam roles describe techcorp.environmentAdmin --organization=$ORG_ID &>/dev/null; then
+    echo "✓ Custom roles created"
+fi
+
+# Check service accounts
+[cols="1,1,1", options="header"]
+|===
+sa_count=$(gcloud iam service-accounts list --format="value(email)" | wc -l)
+|===
+if [[ $sa_count -ge 5 ]]; then
+    echo "✓ Service accounts created ($sa_count accounts)"
+fi
+
+# Check IAM bindings
+[cols="1,1,1", options="header"]
+|===
+if gcloud projects get-iam-policy $PROJECT_ID --format=json | jq -r '.bindings[].members[]' | grep -q "serviceAccount:"; then
+|===
+    echo "✓ IAM bindings configured"
+fi
+
+echo "=== Lab 05 Validation Complete ==="
+EOL
+
+chmod +x validate-lab-05.sh
+./validate-lab-05.sh
+----
+
+== Troubleshooting
+
+=== Common Issues and Solutions
+
+_Issue 1: Resource Already Exists_
+[source,bash]
+----
+# Check existing resources
+terraform state list
+
+# Import existing resource if needed
+terraform import [resource_type].[name] [resource_id]
+----
+
+_Issue 2: Permission Denied_
+[source,bash]
+----
+# Verify IAM permissions
+gcloud projects get-iam-policy $PROJECT_ID
+
+# Check service account permissions
+gcloud iam service-accounts get-iam-policy [service-account-email]
+----
+
+_Issue 3: Terraform State Issues_
+[source,bash]
+----
+# Refresh Terraform state
+terraform refresh
+
+# If state is corrupted, reinitialize
+terraform init -reconfigure
+----
+
+== Lab Completion Checklist
+
+* [ ] All Terraform resources deployed successfully
+* [ ] Validation script passes all checks
+* [ ] Outputs directory contains required files
+* [ ] Resources are properly tagged and documented
+* [ ] Security best practices are implemented
+* [ ] Monitoring and logging are configured (where applicable)
+
+== Output Files
+
+Save the following files in the `outputs/` directory:
+[source,bash]
+----
+# Create outputs directory
+mkdir -p outputs
+
+# Save Terraform outputs
+terraform output -json > outputs/terraform-outputs.json
+
+# Save resource lists
+gcloud compute instances list --format=json > outputs/compute-instances.json
+gcloud iam service-accounts list --format=json > outputs/service-accounts.json
+
+# Save configuration files
+cp main.tf outputs/
+cp variables.tf outputs/
+cp terraform.tfvars outputs/
+----
+
+== Next Steps
+
+Upon successful completion:
+
+1. Review the deliverables with your instructor
+2. Ensure all validation checks pass
+3. Save outputs for use in subsequent labs
+4. Proceed to Lab 06 (if applicable)
+
+'''
+
+_Lab 05 Complete_ ✅
+

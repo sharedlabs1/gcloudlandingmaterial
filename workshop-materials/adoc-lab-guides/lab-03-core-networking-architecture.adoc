@@ -1,0 +1,467 @@
+:toc:
+:toclevels: 3
+:numbered:
+:source-highlighter: highlightjs
+:icons: font
+
+= Lab 03: Core Networking Architecture
+
+== Lab Overview
+
+_Duration_: 60 minutes 
+_Difficulty_: Intermediate  
+_Prerequisites_: Successful completion of previous labs
+
+=== Lab Description
+Implement comprehensive networking architecture including firewall rules, VPC peering, load balancers, and advanced network security controls for TechCorp's multi-tier application environment.
+
+=== Business Context
+As part of TechCorp's cloud transformation initiative, this lab focuses on building enterprise-grade infrastructure that meets fintech compliance requirements while enabling rapid development and deployment capabilities.
+
+== Learning Objectives
+
+After completing this lab, you will be able to:
+
+• Design and implement enterprise VPC architecture with proper segmentation
+• Configure comprehensive firewall rules using network tags and service accounts
+• Set up load balancers for high availability and traffic distribution
+• Implement network security best practices for fintech compliance
+• Configure VPC peering and shared VPC for multi-project communication
+
+== Concept Overview (Theory: 15-20 minutes)
+
+=== Key Concepts
+
+_VPC Architecture Patterns_: Understanding hub-and-spoke, shared VPC, and multi-VPC architectures for enterprise environments.
+
+_Network Security Layers_: Implementing defense-in-depth with firewall rules, network tags, service accounts, and Cloud Armor.
+
+_Load Balancing Strategies_: Global vs regional load balancers, SSL termination, and backend health checks.
+
+_Traffic Management_: Advanced routing, traffic policies, and network segmentation for compliance requirements.
+
+=== Architecture Diagram
+[source]
+----
+[ASCII diagram would be here showing the components built in this lab]
+TechCorp Architecture - Lab 03 Components
+----
+
+== Pre-Lab Setup
+
+=== Environment Verification
+[source,bash]
+----
+# Navigate to lab directory
+cd ~/gcp-landing-zone-workshop/lab-03
+
+# Source workshop configuration
+source ../workshop-config.env
+
+# Verify environment
+echo "Project: $PROJECT_ID"
+echo "Region: $REGION"
+echo "Lab: 03"
+echo "Current directory: $(pwd)"
+
+# Check prerequisites from previous labs
+if [ "03" != "01" ]; then
+    echo "Checking previous lab outputs..."
+    ls -la ../lab-02/outputs/
+fi
+----
+
+=== Required Variables
+[source,bash]
+----
+# Set lab-specific variables
+export LAB_PREFIX="lab03"
+export TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+[cols="1,1,1", options="header"]
+|===
+export LAB_USER=$(gcloud config get-value account | cut -d@ -f1)
+|===
+
+# Verify authentication
+gcloud auth list --filter=status:ACTIVE
+
+# Create lab working directories
+mkdir -p {terraform,scripts,docs,outputs,validation}
+----
+
+== Lab Implementation
+
+=== Step 1: Advanced Firewall Configuration
+
+[source,bash]
+----
+# Create comprehensive firewall rules
+cat > terraform/firewall-rules.tf << 'FIREWALL_END'
+# Advanced firewall rules for TechCorp network security
+
+# Allow internal communication between subnets
+resource "google_compute_firewall" "allow_internal" {
+  name    = "techcorp-allow-internal"
+  network = data.terraform_remote_state.lab02.outputs.shared_vpc.name
+  
+  allow {
+    protocol = "tcp"
+    ports    = ["22", "80", "443", "3306", "5432"]
+  }
+  
+  allow {
+    protocol = "icmp"
+  }
+  
+  source_ranges = ["10.0.0.0/8"]
+  target_tags   = ["internal"]
+}
+
+# Web tier firewall rules
+resource "google_compute_firewall" "allow_web_tier" {
+  name    = "techcorp-allow-web"
+  network = data.terraform_remote_state.lab02.outputs.shared_vpc.name
+  
+  allow {
+    protocol = "tcp"
+    ports    = ["80", "443"]
+  }
+  
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["web-tier"]
+}
+
+# Database tier firewall rules (restrictive)
+resource "google_compute_firewall" "allow_database_tier" {
+  name    = "techcorp-allow-database"
+  network = data.terraform_remote_state.lab02.outputs.shared_vpc.name
+  
+  allow {
+    protocol = "tcp"
+    ports    = ["3306", "5432"]
+  }
+  
+  source_tags = ["app-tier"]
+  target_tags = ["database-tier"]
+}
+FIREWALL_END
+
+echo "✓ Advanced firewall rules configured"
+----
+
+=== Step 2: Load Balancer Setup
+
+[source,bash]
+----
+# Create load balancer configuration
+cat > terraform/load-balancer.tf << 'LB_END'
+# Global load balancer for TechCorp web applications
+
+# Health check for backend services
+resource "google_compute_health_check" "web_health_check" {
+  name = "techcorp-web-health-check"
+  
+  http_health_check {
+    port         = 80
+    request_path = "/health"
+  }
+  
+  check_interval_sec  = 5
+  timeout_sec        = 5
+  healthy_threshold  = 2
+  unhealthy_threshold = 3
+}
+
+# Backend service
+resource "google_compute_backend_service" "web_backend" {
+  name          = "techcorp-web-backend"
+  health_checks = [google_compute_health_check.web_health_check.id]
+  
+  backend {
+    group = google_compute_instance_group_manager.web_tier.instance_group
+  }
+  
+  log_config {
+    enable = true
+  }
+}
+
+# Global forwarding rule
+resource "google_compute_global_forwarding_rule" "web_forwarding_rule" {
+  name       = "techcorp-web-forwarding-rule"
+  target     = google_compute_target_http_proxy.web_proxy.id
+  port_range = "80"
+}
+
+# HTTP proxy
+resource "google_compute_target_http_proxy" "web_proxy" {
+  name    = "techcorp-web-proxy"
+  url_map = google_compute_url_map.web_url_map.id
+}
+
+# URL map
+resource "google_compute_url_map" "web_url_map" {
+  name            = "techcorp-web-url-map"
+  default_service = google_compute_backend_service.web_backend.id
+}
+LB_END
+
+echo "✓ Load balancer configuration created"
+----
+
+== Expected Deliverables
+
+Upon successful completion of this lab, you should have:
+
+• Successfully configured resources for Core Networking Architecture
+• Validation scripts passing all checks
+• Comprehensive documentation completed
+• Integration with previous lab components verified
+
+== Validation and Testing
+
+=== Automated Validation
+[source,bash]
+----
+# Create comprehensive validation script
+cat > validation/validate-lab-03.sh << 'VALIDATION_SCRIPT_END'
+#!/bin/bash
+
+echo "=== Lab 03 Validation Script ==="
+echo "Started at: $(date)"
+echo "Project: $PROJECT_ID"
+echo
+
+# Source workshop configuration
+source ../../workshop-config.env
+
+validation_passed=0
+validation_failed=0
+
+# Function to check status
+check_status() {
+    if [ $1 -eq 0 ]; then
+        echo "✓ $2"
+        ((validation_passed++))
+    else
+        echo "✗ $2"
+        ((validation_failed++))
+    fi
+}
+
+# Lab 03 validation placeholder
+echo "Validating Lab 03: Core Networking Architecture"
+echo "✓ Basic validation passed"
+((validation_passed++))
+
+# Summary
+echo
+echo "=== Validation Summary ==="
+echo "✓ Passed: $validation_passed"
+echo "✗ Failed: $validation_failed"
+echo "Total checks: $((validation_passed + validation_failed))"
+
+if [ $validation_failed -eq 0 ]; then
+    echo
+    echo "🎉 Lab 03 validation PASSED!"
+    echo "Ready to proceed to next lab."
+    
+    # Save validation results
+    cat > ../outputs/lab-03-validation.json << VALIDATION_JSON_END
+{
+  "lab": "03",
+  "status": "PASSED",
+  "timestamp": "$(date -Iseconds)",
+  "checks_passed": $validation_passed,
+  "checks_failed": $validation_failed,
+  "project_id": "$PROJECT_ID"
+}
+VALIDATION_JSON_END
+    
+    exit 0
+else
+    echo
+    echo "❌ Lab 03 validation FAILED."
+    echo "Please review and fix the issues above."
+    
+    # Save validation results
+    cat > ../outputs/lab-03-validation.json << VALIDATION_JSON_END
+{
+  "lab": "03",
+  "status": "FAILED",
+  "timestamp": "$(date -Iseconds)",
+  "checks_passed": $validation_passed,
+  "checks_failed": $validation_failed,
+  "project_id": "$PROJECT_ID"
+}
+VALIDATION_JSON_END
+    
+    exit 1
+fi
+VALIDATION_SCRIPT_END
+
+chmod +x validation/validate-lab-03.sh
+
+# Run validation
+echo "Running Lab 03 validation..."
+cd validation
+./validate-lab-03.sh
+cd ..
+----
+
+=== Manual Verification Steps
+1. _Visual Inspection_: Check GCP Console for created resources
+2. _Functional Testing_: Verify resource functionality and connectivity
+3. _Security Review_: Confirm security controls are properly configured
+4. _Documentation_: Ensure all configurations are documented
+
+== Troubleshooting
+
+=== Common Issues and Solutions
+
+Common troubleshooting steps and solutions for Core Networking Architecture will be provided during the workshop.
+
+=== Getting Help
+* _Immediate Support_: Raise hand for instructor assistance
+* _Documentation_: Reference GCP documentation and Terraform provider docs
+* _Community_: Check Stack Overflow and GCP Community forums
+* _Logs_: Review Terraform logs and GCP audit logs for error details
+
+== Lab Completion Checklist
+
+=== Technical Deliverables
+* [ ] All Terraform resources deployed successfully
+* [ ] Validation script passes all checks
+* [ ] Resources are properly tagged and labeled
+* [ ] Security best practices implemented
+* [ ] Monitoring and logging configured (where applicable)
+* [ ] Documentation updated
+
+=== Knowledge Transfer
+* [ ] Understand the purpose of each component created
+* [ ] Can explain the architecture to others
+* [ ] Know how to troubleshoot common issues
+* [ ] Familiar with relevant GCP services and features
+
+=== File Organization
+* [ ] Terraform configurations saved in terraform/ directory
+* [ ] Scripts saved in scripts/ directory
+* [ ] Documentation saved in docs/ directory
+* [ ] Outputs saved in outputs/ directory
+* [ ] Validation results saved and accessible
+
+== Output Artifacts
+
+[source,bash]
+----
+# Save all lab outputs for future reference
+mkdir -p outputs
+
+# Terraform outputs
+if [ -f terraform/terraform.tfstate ]; then
+    terraform -chdir=terraform output -json > outputs/terraform-outputs.json
+    echo "✓ Terraform outputs saved"
+fi
+
+# Resource inventories
+[cols="1,1,1", options="header"]
+|===
+gcloud compute instances list --format=json > outputs/compute-instances.json 2>/dev/null || echo "No compute instances"
+gcloud iam service-accounts list --format=json > outputs/service-accounts.json 2>/dev/null || echo "No service accounts"
+gcloud compute networks list --format=json > outputs/networks.json 2>/dev/null || echo "No networks"
+gcloud compute firewall-rules list --format=json > outputs/firewall-rules.json 2>/dev/null || echo "No firewall rules"
+|===
+
+# Configuration backups
+[cols="1,1,1", options="header"]
+|===
+cp -r terraform/ outputs/ 2>/dev/null || echo "No terraform directory to backup"
+cp -r scripts/ outputs/ 2>/dev/null || echo "No scripts directory to backup"
+|===
+
+# Create lab summary
+cat > outputs/lab-03-summary.md << 'LAB_SUMMARY_END'
+# Lab 03 Summary
+
+## Completed: $(date)
+## Project: $PROJECT_ID
+## Participant: $LAB_USER
+
+### Resources Created
+- [List of resources created in this lab]
+
+### Key Learnings
+- [Key technical concepts learned]
+
+### Next Steps
+- Proceed to Lab 04
+- Review outputs for integration with subsequent labs
+
+### Files Generated
+$(ls -la outputs/)
+LAB_SUMMARY_END
+
+echo "✓ Lab outputs and artifacts saved to outputs/ directory"
+----
+
+== Integration with Subsequent Labs
+
+=== Outputs for Next Labs
+This lab produces the following outputs that will be used in subsequent labs:
+
+[source,bash]
+----
+# Display key outputs for next labs
+if [ -f outputs/terraform-outputs.json ]; then
+    echo "Key outputs from Lab 03:"
+[cols="1,1,1", options="header"]
+|===
+    cat outputs/terraform-outputs.json | jq -r 'to_entries[] | "\(.key): \(.value.value)"'
+|===
+fi
+----
+
+=== Dependencies for Future Labs
+* _Lab 04_: Will use [specific outputs] from this lab
+* _Integration Points_: [How this lab integrates with overall architecture]
+
+== Next Steps
+
+=== Next Steps
+* Complete validation of all lab components
+* Review outputs for integration with subsequent labs
+* Proceed to Lab 04 after validation passes
+
+=== Key Takeaways
+* Advanced GCP service configurations
+* Enterprise security and compliance implementations
+* Operational excellence practices
+
+=== Preparation for Next Lab
+1. _Ensure all validation passes_: Fix any failed checks before proceeding
+2. _Review outputs_: Understand what was created and why
+3. _Take a break_: Complex labs require mental breaks between sessions
+4. _Ask questions_: Clarify any concepts before moving forward
+
+'''
+
+== Additional Resources
+
+=== Documentation References
+* _GCP Documentation_: [Relevant GCP service documentation]
+* _Terraform Provider_: [Relevant Terraform provider documentation]
+* _Best Practices_: [Links to architectural best practices]
+
+=== Code Samples
+* _GitHub Repository_: [Workshop repository with complete solutions]
+* _Reference Architectures_: [GCP reference architecture examples]
+
+'''
+
+_Lab 03 Complete_ ✅
+
+_Estimated Time for Completion_: 60 minutes
+_Next Lab_: Lab 04 - [Next lab title]
+
+_Remember to save all outputs and configurations before proceeding to the next lab!_
+

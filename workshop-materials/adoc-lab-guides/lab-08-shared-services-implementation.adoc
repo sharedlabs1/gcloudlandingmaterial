@@ -1,0 +1,1621 @@
+:toc:
+:toclevels: 3
+:numbered:
+:source-highlighter: highlightjs
+:icons: font
+
+= Lab 08: Shared Services Implementation
+
+== Lab Overview
+
+_Duration_: 60 minutes 
+_Difficulty_: Advanced  
+_Prerequisites_: Successful completion of Labs 01-07 (including centralized logging)
+
+=== Lab Description
+Deploy shared services including Cloud DNS, certificate management, centralized security scanning, and service discovery to support TechCorp's enterprise infrastructure with high availability and automation.
+
+=== Business Context
+As TechCorp's cloud infrastructure matures, this lab implements advanced operational capabilities essential for production fintech environments, including regulatory compliance, operational excellence, and enterprise-grade automation.
+
+== Learning Objectives
+
+After completing this lab, you will be able to:
+
+• Deploy and configure Cloud DNS for internal and external resolution
+• Set up automated certificate management with automatic rotation and distribution
+• Implement centralized security scanning and vulnerability management
+• Configure service discovery architecture for microservices
+• Deploy shared monitoring and observability services
+• Set up centralized configuration management and secret distribution
+• Implement shared backup and disaster recovery services
+
+== Concept Overview (Theory: 15-20 minutes)
+
+=== Key Concepts
+
+_Shared Services Architecture_: Enterprise environments require centralized services that are shared across multiple applications and environments. This includes DNS resolution, certificate management, security scanning, and service discovery to reduce operational overhead and ensure consistency.
+
+_Cloud DNS and Service Discovery_: Centralized DNS management provides consistent name resolution across hybrid and multi-cloud environments. This includes private DNS zones, DNS forwarding, and service discovery patterns for microservices architectures.
+
+_Certificate Management_: Automated certificate provisioning, rotation, and management are essential for enterprise security. This includes integration with Certificate Authority services, automated renewal, and distribution to services.
+
+_Security Services_: Centralized security services include vulnerability scanning, compliance monitoring, and security automation that can be shared across all environments and applications.
+
+=== Architecture Diagram
+[source]
+----
+[ASCII diagram would be here showing the components built in this lab]
+TechCorp Architecture - Lab 08 Components
+Integration with Labs 01-07
+----
+
+== Pre-Lab Setup
+
+=== Environment Verification
+[source,bash]
+----
+# Navigate to lab directory
+cd ~/gcp-landing-zone-workshop/lab-08
+
+# Source workshop configuration
+source ../workshop-config.env
+
+# Verify environment
+echo "Project: $PROJECT_ID"
+echo "Region: $REGION"
+echo "Lab: 08"
+echo "Current directory: $(pwd)"
+
+# Check prerequisites from previous labs
+echo "Checking previous lab outputs..."
+ls -la ../lab-07/outputs/
+
+# Verify Day 1 foundation is complete
+required_labs=(01 02 03 04 05 06)
+for lab in "${required_labs[@]}"; do
+    if [ -f "../lab-$lab/outputs/lab-$lab-validation.json" ]; then
+        status=$(jq -r '.status' "../lab-$lab/outputs/lab-$lab-validation.json")
+        if [ "$status" = "PASSED" ]; then
+            echo "✓ Lab $lab: Foundation ready"
+        else
+            echo "✗ Lab $lab: Validation failed - please complete Day 1 labs first"
+            exit 1
+        fi
+    else
+        echo "✗ Lab $lab: Not completed - please complete Day 1 labs first"
+        exit 1
+    fi
+done
+----
+
+=== Required Variables
+[source,bash]
+----
+# Set lab-specific variables
+export LAB_PREFIX="lab08"
+export TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+[cols="1,1,1", options="header"]
+|===
+export LAB_USER=$(gcloud config get-value account | cut -d@ -f1)
+|===
+
+# Verify authentication
+gcloud auth list --filter=status:ACTIVE
+
+# Create lab working directories
+mkdir -p {terraform,scripts,docs,outputs,validation}
+
+# Get previous lab outputs for integration
+if [ -f "../lab-07/outputs/terraform-outputs.json" ]; then
+    echo "✓ Previous lab outputs available for integration"
+else
+    echo "⚠ Previous lab outputs not found - some integrations may not work"
+fi
+----
+
+== Lab Implementation
+
+=== Step 1: Cloud DNS Infrastructure Setup
+
+Configure enterprise DNS services for TechCorp's internal and external resolution needs.
+
+[source,bash]
+----
+# Navigate to lab directory
+cd ~/gcp-landing-zone-workshop/lab-08/terraform
+
+# Create main shared services configuration
+cat > main.tf << 'SHARED_SERVICES_MAIN_END'
+# Lab 08: Shared Services Implementation
+# Centralized shared services for TechCorp enterprise infrastructure
+
+terraform {
+  required_version = ">= 1.5"
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 5.0"
+    }
+    google-beta = {
+      source  = "hashicorp/google-beta"
+      version = "~> 5.0"
+    }
+  }
+  
+  backend "gcs" {
+    bucket = "${TF_STATE_BUCKET}"
+    prefix = "lab-08/terraform/state"
+  }
+}
+
+# Get previous lab outputs for integration
+data "terraform_remote_state" "lab02" {
+  backend = "gcs"
+  config = {
+    bucket = var.tf_state_bucket
+    prefix = "lab-02/terraform/state"
+  }
+}
+
+data "terraform_remote_state" "lab07" {
+  backend = "gcs"
+  config = {
+    bucket = var.tf_state_bucket
+    prefix = "lab-07/terraform/state"
+  }
+}
+
+# Local values for shared services
+locals {
+  common_labels = {
+    workshop    = "gcp-landing-zone"
+    lab         = "08"
+    component   = "shared-services"
+    environment = "enterprise"
+  }
+  
+  # DNS zone configuration
+  dns_zones = {
+    internal = {
+      name         = "techcorp-internal"
+      dns_name     = "techcorp.internal."
+      description  = "Internal DNS zone for TechCorp services"
+      visibility   = "private"
+    }
+    public = {
+      name         = "techcorp-public"
+      dns_name     = "techcorp-demo.com."
+      description  = "Public DNS zone for TechCorp external services"
+      visibility   = "public"
+    }
+  }
+  
+  # Service endpoints for internal resolution
+  internal_services = {
+    "api"      = "10.1.0.10"
+    "database" = "10.1.4.10"
+    "cache"    = "10.1.0.20"
+    "monitor"  = "10.0.0.10"
+    "logs"     = "10.0.0.20"
+  }
+}
+
+# Create private DNS zone for internal services
+resource "google_dns_managed_zone" "internal_zone" {
+  name         = local.dns_zones.internal.name
+  dns_name     = local.dns_zones.internal.dns_name
+  description  = local.dns_zones.internal.description
+  
+  visibility = "private"
+  
+  private_visibility_config {
+    networks {
+      network_url = data.terraform_remote_state.lab02.outputs.shared_vpc.id
+    }
+  }
+  
+  labels = merge(local.common_labels, {
+    zone_type = "private"
+    purpose   = "internal-services"
+  })
+}
+
+# Create DNS records for internal services
+resource "google_dns_record_set" "internal_services" {
+  for_each = local.internal_services
+  
+  name         = "${each.key}.${google_dns_managed_zone.internal_zone.dns_name}"
+  managed_zone = google_dns_managed_zone.internal_zone.name
+  type         = "A"
+  ttl          = 300
+  rrdatas      = [each.value]
+}
+
+# Create CNAME records for service aliases
+resource "google_dns_record_set" "service_aliases" {
+  for_each = {
+    "db"  = "database.techcorp.internal."
+    "api" = "api.techcorp.internal."
+    "mon" = "monitor.techcorp.internal."
+  }
+  
+  name         = "${each.key}.${google_dns_managed_zone.internal_zone.dns_name}"
+  managed_zone = google_dns_managed_zone.internal_zone.name
+  type         = "CNAME"
+  ttl          = 300
+  rrdatas      = [each.value]
+}
+
+# Create public DNS zone (for demo purposes)
+resource "google_dns_managed_zone" "public_zone" {
+  name        = local.dns_zones.public.name
+  dns_name    = local.dns_zones.public.dns_name
+  description = local.dns_zones.public.description
+  
+  visibility = "public"
+  
+  labels = merge(local.common_labels, {
+    zone_type = "public"
+    purpose   = "external-services"
+  })
+}
+
+# Create public DNS records
+resource "google_dns_record_set" "public_www" {
+  name         = "www.${google_dns_managed_zone.public_zone.dns_name}"
+  managed_zone = google_dns_managed_zone.public_zone.name
+  type         = "A"
+  ttl          = 300
+  rrdatas      = ["203.0.113.10"]  # Example public IP
+}
+SHARED_SERVICES_MAIN_END
+
+echo "✓ DNS infrastructure configuration created"
+----
+
+=== Step 2: Certificate Management Setup
+
+Configure automated certificate management for TechCorp's services.
+
+[source,bash]
+----
+# Add certificate management configuration
+cat >> main.tf << 'CERT_MGMT_END'
+
+# Create SSL certificates for internal services
+resource "google_compute_ssl_certificate" "internal_cert" {
+  name_prefix = "techcorp-internal-"
+  description = "SSL certificate for TechCorp internal services"
+  
+  managed {
+    domains = [
+      "api.techcorp.internal",
+      "monitor.techcorp.internal",
+      "logs.techcorp.internal"
+    ]
+  }
+  
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Create SSL certificate for public services
+resource "google_compute_ssl_certificate" "public_cert" {
+  name_prefix = "techcorp-public-"
+  description = "SSL certificate for TechCorp public services"
+  
+  managed {
+    domains = [
+      "www.techcorp-demo.com",
+      "api.techcorp-demo.com"
+    ]
+  }
+  
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Create Certificate Manager certificate map
+resource "google_certificate_manager_certificate_map" "techcorp_cert_map" {
+  name        = "techcorp-certificate-map"
+  description = "Certificate map for TechCorp services"
+  
+  labels = local.common_labels
+}
+
+# Create certificate map entries
+resource "google_certificate_manager_certificate_map_entry" "internal_entry" {
+  name         = "internal-services"
+  description  = "Certificate mapping for internal services"
+  map          = google_certificate_manager_certificate_map.techcorp_cert_map.name
+  certificates = [google_compute_ssl_certificate.internal_cert.id]
+  hostname     = "*.techcorp.internal"
+}
+
+resource "google_certificate_manager_certificate_map_entry" "public_entry" {
+  name         = "public-services"
+  description  = "Certificate mapping for public services"
+  map          = google_certificate_manager_certificate_map.techcorp_cert_map.name
+  certificates = [google_compute_ssl_certificate.public_cert.id]
+  hostname     = "*.techcorp-demo.com"
+}
+
+# Create secrets for certificate management
+resource "google_secret_manager_secret" "tls_private_key" {
+  secret_id = "techcorp-tls-private-key"
+  
+  replication {
+    automatic = true
+  }
+  
+  labels = merge(local.common_labels, {
+    purpose = "tls-certificates"
+  })
+}
+
+# Store certificate information
+resource "google_secret_manager_secret" "cert_metadata" {
+  secret_id = "techcorp-cert-metadata"
+  
+  replication {
+    automatic = true
+  }
+  
+  labels = merge(local.common_labels, {
+    purpose = "certificate-metadata"
+  })
+}
+
+resource "google_secret_manager_secret_version" "cert_metadata_version" {
+  secret = google_secret_manager_secret.cert_metadata.id
+  secret_data = jsonencode({
+    internal_cert_id = google_compute_ssl_certificate.internal_cert.id
+    public_cert_id   = google_compute_ssl_certificate.public_cert.id
+    cert_map_id      = google_certificate_manager_certificate_map.techcorp_cert_map.id
+    created_at       = timestamp()
+  })
+}
+CERT_MGMT_END
+
+echo "✓ Certificate management configuration added"
+----
+
+=== Step 3: Shared Security Services
+
+Set up centralized security scanning and monitoring services.
+
+[source,bash]
+----
+# Add security services configuration
+cat >> main.tf << 'SECURITY_SERVICES_END'
+
+# Create service account for security scanning
+resource "google_service_account" "security_scanner" {
+  account_id   = "techcorp-security-scanner"
+  display_name = "TechCorp Security Scanner Service Account"
+  description  = "Service account for centralized security scanning and vulnerability assessment"
+}
+
+# Grant security scanner permissions
+resource "google_project_iam_member" "security_scanner_permissions" {
+  for_each = toset([
+    "roles/cloudsecurityscanner.editor",
+    "roles/securitycenter.admin",
+    "roles/compute.securityAdmin",
+    "roles/storage.admin"
+  ])
+  
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.security_scanner.email}"
+}
+
+# Create security scanning configuration storage
+resource "google_storage_bucket" "security_scan_results" {
+  name     = "${var.project_id}-security-scan-results"
+  location = var.region
+  
+  uniform_bucket_level_access = true
+  
+  versioning {
+    enabled = true
+  }
+  
+  lifecycle_rule {
+    condition {
+      age = 90
+    }
+    action {
+      type = "Delete"
+    }
+  }
+  
+  labels = merge(local.common_labels, {
+    purpose = "security-scanning"
+  })
+}
+
+# Create Pub/Sub topic for security alerts
+resource "google_pubsub_topic" "security_alerts" {
+  name = "techcorp-security-alerts"
+  
+  labels = merge(local.common_labels, {
+    purpose = "security-alerting"
+  })
+}
+
+# Create subscription for security alerts
+resource "google_pubsub_subscription" "security_alerts_sub" {
+  name  = "techcorp-security-alerts-processor"
+  topic = google_pubsub_topic.security_alerts.name
+  
+  # Message retention for 7 days
+  message_retention_duration = "604800s"
+  
+  # Acknowledgment deadline
+  ack_deadline_seconds = 20
+  
+  labels = local.common_labels
+}
+
+# Create Cloud Function for security alert processing (placeholder)
+resource "google_storage_bucket_object" "security_function_source" {
+  name   = "security-alert-processor.zip"
+  bucket = google_storage_bucket.security_scan_results.name
+  source = "/dev/null"  # Placeholder - would contain actual function code
+}
+
+# Create security monitoring dashboard configuration
+resource "google_secret_manager_secret" "security_dashboard_config" {
+  secret_id = "techcorp-security-dashboard-config"
+  
+  replication {
+    automatic = true
+  }
+  
+  labels = merge(local.common_labels, {
+    purpose = "security-monitoring"
+  })
+}
+
+resource "google_secret_manager_secret_version" "security_dashboard_config_version" {
+  secret = google_secret_manager_secret.security_dashboard_config.id
+  secret_data = jsonencode({
+    dashboard_title = "TechCorp Security Overview"
+    scan_frequency  = "daily"
+    alert_channels  = [google_pubsub_topic.security_alerts.name]
+    scan_targets    = [
+      "api.techcorp.internal",
+      "www.techcorp-demo.com"
+    ]
+    compliance_frameworks = ["PCI-DSS", "SOX", "ISO-27001"]
+  })
+}
+SECURITY_SERVICES_END
+
+echo "✓ Security services configuration added"
+----
+
+=== Step 4: Service Discovery and Configuration Management
+
+Set up service discovery and centralized configuration management.
+
+[source,bash]
+----
+# Add service discovery configuration
+cat >> main.tf << 'SERVICE_DISCOVERY_END'
+
+# Create service registry in Secret Manager
+resource "google_secret_manager_secret" "service_registry" {
+  secret_id = "techcorp-service-registry"
+  
+  replication {
+    automatic = true
+  }
+  
+  labels = merge(local.common_labels, {
+    purpose = "service-discovery"
+  })
+}
+
+resource "google_secret_manager_secret_version" "service_registry_version" {
+  secret = google_secret_manager_secret.service_registry.id
+  secret_data = jsonencode({
+    services = {
+      api = {
+        endpoint    = "api.techcorp.internal"
+        port        = 443
+        protocol    = "https"
+        health_path = "/health"
+        environment = "shared"
+      }
+      database = {
+        endpoint    = "database.techcorp.internal"
+        port        = 5432
+        protocol    = "postgresql"
+        environment = "shared"
+      }
+      cache = {
+        endpoint    = "cache.techcorp.internal"
+        port        = 6379
+        protocol    = "redis"
+        environment = "shared"
+      }
+      monitoring = {
+        endpoint    = "monitor.techcorp.internal"
+        port        = 443
+        protocol    = "https"
+        health_path = "/health"
+        environment = "shared"
+      }
+      logging = {
+        endpoint    = "logs.techcorp.internal"
+        port        = 443
+        protocol    = "https"
+        environment = "shared"
+      }
+    }
+    discovery_config = {
+      ttl                = 300
+      health_check_interval = 30
+      retry_attempts     = 3
+    }
+  })
+}
+
+# Create shared configuration store
+resource "google_secret_manager_secret" "shared_config" {
+  secret_id = "techcorp-shared-config"
+  
+  replication {
+    automatic = true
+  }
+  
+  labels = merge(local.common_labels, {
+    purpose = "configuration-management"
+  })
+}
+
+resource "google_secret_manager_secret_version" "shared_config_version" {
+  secret = google_secret_manager_secret.shared_config.id
+  secret_data = jsonencode({
+    database = {
+      max_connections = 100
+      timeout_seconds = 30
+      ssl_mode       = "require"
+    }
+    cache = {
+      max_memory     = "512mb"
+      eviction_policy = "allkeys-lru"
+      timeout_seconds = 5
+    }
+    monitoring = {
+      scrape_interval = "15s"
+      evaluation_interval = "15s"
+      retention_days = 30
+    }
+    logging = {
+      level = "INFO"
+      format = "json"
+      rotation_size = "100MB"
+    }
+    security = {
+      tls_min_version = "1.2"
+      cipher_suites   = ["TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"]
+      session_timeout = 3600
+    }
+  })
+}
+
+# Create service account for configuration access
+resource "google_service_account" "config_manager" {
+  account_id   = "techcorp-config-manager"
+  display_name = "TechCorp Configuration Manager"
+  description  = "Service account for shared configuration management"
+}
+
+# Grant configuration manager permissions
+resource "google_secret_manager_secret_iam_member" "config_access" {
+  for_each = {
+    service_registry = google_secret_manager_secret.service_registry.secret_id
+    shared_config    = google_secret_manager_secret.shared_config.secret_id
+  }
+  
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.config_manager.email}"
+}
+SERVICE_DISCOVERY_END
+
+echo "✓ Service discovery and configuration management added"
+----
+
+=== Step 5: Shared Monitoring and Backup Services
+
+Configure shared operational services for the enterprise.
+
+[source,bash]
+----
+# Add shared operational services
+cat >> main.tf << 'OPERATIONAL_SERVICES_END'
+
+# Create shared monitoring workspace
+resource "google_monitoring_workspace" "techcorp_workspace" {
+  count = 0  # Disabled as workspace creation requires special handling
+}
+
+# Create shared backup storage
+resource "google_storage_bucket" "shared_backups" {
+  name     = "${var.project_id}-shared-backups"
+  location = var.region
+  
+  uniform_bucket_level_access = true
+  
+  versioning {
+    enabled = true
+  }
+  
+  # Lifecycle management for cost optimization
+  lifecycle_rule {
+    condition {
+      age = 30
+    }
+    action {
+      type          = "SetStorageClass"
+      storage_class = "NEARLINE"
+    }
+  }
+  
+  lifecycle_rule {
+    condition {
+      age = 90
+    }
+    action {
+      type          = "SetStorageClass"
+      storage_class = "COLDLINE"
+    }
+  }
+  
+  lifecycle_rule {
+    condition {
+      age = 365
+    }
+    action {
+      type          = "SetStorageClass"
+      storage_class = "ARCHIVE"
+    }
+  }
+  
+  labels = merge(local.common_labels, {
+    purpose = "shared-backups"
+  })
+}
+
+# Create backup schedule configuration
+resource "google_secret_manager_secret" "backup_schedule" {
+  secret_id = "techcorp-backup-schedule"
+  
+  replication {
+    automatic = true
+  }
+  
+  labels = merge(local.common_labels, {
+    purpose = "backup-configuration"
+  })
+}
+
+resource "google_secret_manager_secret_version" "backup_schedule_version" {
+  secret = google_secret_manager_secret.backup_schedule.id
+  secret_data = jsonencode({
+    schedules = {
+      daily = {
+        time     = "02:00"
+        timezone = "UTC"
+        retention_days = 7
+        targets = ["databases", "configurations", "logs"]
+      }
+      weekly = {
+        day      = "sunday"
+        time     = "01:00"
+        timezone = "UTC"
+        retention_weeks = 4
+        targets = ["full-system", "security-configs"]
+      }
+      monthly = {
+        day      = 1
+        time     = "00:00"
+        timezone = "UTC"
+        retention_months = 12
+        targets = ["archive", "compliance-data"]
+      }
+    }
+    notification_channels = [
+      google_pubsub_topic.security_alerts.name,
+      data.terraform_remote_state.lab07.outputs.log_alerting_topic.name
+    ]
+  })
+}
+
+# Create service account for backup operations
+resource "google_service_account" "backup_manager" {
+  account_id   = "techcorp-backup-manager"
+  display_name = "TechCorp Backup Manager"
+  description  = "Service account for shared backup and restore operations"
+}
+
+# Grant backup manager permissions
+resource "google_project_iam_member" "backup_manager_permissions" {
+  for_each = toset([
+    "roles/storage.admin",
+    "roles/compute.storageAdmin",
+    "roles/secretmanager.secretAccessor"
+  ])
+  
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.backup_manager.email}"
+}
+
+# Create shared health check endpoints
+resource "google_compute_health_check" "shared_services_health" {
+  name        = "techcorp-shared-services-health"
+  description = "Health check for shared services"
+  
+  timeout_sec         = 5
+  check_interval_sec  = 10
+  healthy_threshold   = 2
+  unhealthy_threshold = 3
+  
+  http_health_check {
+    port         = 80
+    request_path = "/health"
+  }
+}
+
+# Data source for current user
+data "google_client_openid_userinfo" "current" {}
+OPERATIONAL_SERVICES_END
+
+echo "✓ Operational services configuration added"
+----
+
+=== Step 6: Create Variables and Outputs
+
+Set up configuration management for shared services.
+
+[source,bash]
+----
+# Create variables file
+cat > variables.tf << 'SHARED_VARS_END'
+# Variables for Lab 08: Shared Services Implementation
+
+variable "project_id" {
+  description = "The GCP project ID"
+  type        = string
+}
+
+variable "region" {
+  description = "The default GCP region"
+  type        = string
+  default     = "us-central1"
+}
+
+variable "tf_state_bucket" {
+  description = "Terraform state bucket name"
+  type        = string
+}
+
+variable "internal_domain" {
+  description = "Internal domain name for TechCorp"
+  type        = string
+  default     = "techcorp.internal"
+}
+
+variable "public_domain" {
+  description = "Public domain name for TechCorp demo"
+  type        = string
+  default     = "techcorp-demo.com"
+}
+
+variable "enable_security_scanning" {
+  description = "Enable centralized security scanning"
+  type        = bool
+  default     = true
+}
+
+variable "backup_retention_days" {
+  description = "Default backup retention period"
+  type        = number
+  default     = 30
+}
+
+variable "certificate_auto_renewal" {
+  description = "Enable automatic certificate renewal"
+  type        = bool
+  default     = true
+}
+
+variable "dns_ttl" {
+  description = "Default TTL for DNS records"
+  type        = number
+  default     = 300
+}
+SHARED_VARS_END
+
+# Create terraform.tfvars
+cat > terraform.tfvars << 'SHARED_TFVARS_END'
+# Lab 08 Configuration Values
+project_id = "${PROJECT_ID}"
+region = "${REGION}"
+tf_state_bucket = "${TF_STATE_BUCKET}"
+
+# TechCorp shared services configuration
+internal_domain = "techcorp.internal"
+public_domain = "techcorp-demo.com"
+enable_security_scanning = true
+backup_retention_days = 30
+certificate_auto_renewal = true
+dns_ttl = 300
+SHARED_TFVARS_END
+
+# Create comprehensive outputs
+cat > outputs.tf << 'SHARED_OUTPUTS_END'
+# Outputs for Lab 08: Shared Services Implementation
+
+# DNS zones and records
+output "dns_zones" {
+  description = "Created DNS zones"
+  value = {
+    internal = {
+      name     = google_dns_managed_zone.internal_zone.name
+      dns_name = google_dns_managed_zone.internal_zone.dns_name
+      id       = google_dns_managed_zone.internal_zone.id
+    }
+    public = {
+      name     = google_dns_managed_zone.public_zone.name
+      dns_name = google_dns_managed_zone.public_zone.dns_name
+      id       = google_dns_managed_zone.public_zone.id
+    }
+  }
+}
+
+output "service_endpoints" {
+  description = "Internal service endpoints"
+  value = {
+    for service, ip in local.internal_services : service => {
+      fqdn = "${service}.techcorp.internal"
+      ip   = ip
+    }
+  }
+}
+
+# Certificate management
+output "ssl_certificates" {
+  description = "Created SSL certificates"
+  value = {
+    internal_cert = {
+      id   = google_compute_ssl_certificate.internal_cert.id
+      name = google_compute_ssl_certificate.internal_cert.name
+    }
+    public_cert = {
+      id   = google_compute_ssl_certificate.public_cert.id
+      name = google_compute_ssl_certificate.public_cert.name
+    }
+    cert_map = {
+      id   = google_certificate_manager_certificate_map.techcorp_cert_map.id
+      name = google_certificate_manager_certificate_map.techcorp_cert_map.name
+    }
+  }
+}
+
+# Security services
+output "security_services" {
+  description = "Shared security services"
+  value = {
+    scanner_sa      = google_service_account.security_scanner.email
+    scan_results_bucket = google_storage_bucket.security_scan_results.name
+    alerts_topic    = google_pubsub_topic.security_alerts.name
+    alerts_subscription = google_pubsub_subscription.security_alerts_sub.name
+  }
+}
+
+# Service discovery and configuration
+output "service_discovery" {
+  description = "Service discovery configuration"
+  value = {
+    service_registry_secret = google_secret_manager_secret.service_registry.secret_id
+    shared_config_secret   = google_secret_manager_secret.shared_config.secret_id
+    config_manager_sa      = google_service_account.config_manager.email
+  }
+}
+
+# Backup services
+output "backup_services" {
+  description = "Shared backup services"
+  value = {
+    backup_bucket     = google_storage_bucket.shared_backups.name
+    backup_schedule   = google_secret_manager_secret.backup_schedule.secret_id
+    backup_manager_sa = google_service_account.backup_manager.email
+  }
+}
+
+# Health checks
+output "health_checks" {
+  description = "Shared health check configurations"
+  value = {
+    shared_services_health = google_compute_health_check.shared_services_health.id
+  }
+}
+
+# Integration outputs for subsequent labs
+output "shared_services_integration" {
+  description = "Integration points for other labs"
+  value = {
+    internal_dns_zone     = google_dns_managed_zone.internal_zone.name
+    certificate_map_id    = google_certificate_manager_certificate_map.techcorp_cert_map.id
+    security_alerts_topic = google_pubsub_topic.security_alerts.name
+    service_registry      = google_secret_manager_secret.service_registry.secret_id
+    backup_bucket        = google_storage_bucket.shared_backups.name
+  }
+}
+SHARED_OUTPUTS_END
+
+echo "✓ Variables and outputs configuration created"
+----
+
+=== Step 7: Deploy and Validate Shared Services
+
+Initialize, plan, and apply the shared services configuration.
+
+[source,bash]
+----
+# Initialize and deploy
+echo "Initializing Terraform for shared services..."
+terraform init
+
+echo "Validating shared services configuration..."
+terraform validate
+
+if [ $? -eq 0 ]; then
+    echo "✓ Terraform configuration is valid"
+else
+    echo "✗ Terraform configuration validation failed"
+    exit 1
+fi
+
+echo "Planning shared services deployment..."
+terraform plan -var-file=terraform.tfvars -out=lab08.tfplan
+
+echo "Review the plan above. It should show:"
+echo "- Private and public DNS zones with service records"
+echo "- SSL certificates with automatic management"
+echo "- Security scanning infrastructure"
+echo "- Service discovery and configuration management"
+echo "- Shared backup and monitoring services"
+echo "- Service accounts with appropriate permissions"
+
+read -p "Apply this shared services configuration? (y/N): " confirm
+[cols="1,1,1", options="header"]
+|===
+if [[ $confirm == "y" || $confirm == "Y" ]]; then
+|===
+    echo "Applying shared services infrastructure..."
+    terraform apply lab08.tfplan
+    
+    if [ $? -eq 0 ]; then
+        echo "✓ Shared services infrastructure deployed successfully"
+        echo "✓ Enterprise shared services are ready"
+    else
+        echo "✗ Terraform apply failed"
+        exit 1
+    fi
+else
+    echo "Terraform apply cancelled"
+    exit 1
+fi
+----
+
+=== Step 8: Test Shared Services
+
+Create scripts to validate shared services functionality.
+
+[source,bash]
+----
+# Create shared services test script
+cat > ../scripts/test-shared-services.sh << 'SHARED_TEST_END'
+#!/bin/bash
+
+echo "=== Testing TechCorp Shared Services ==="
+
+# Test DNS resolution
+echo "Testing DNS resolution..."
+echo "Internal DNS zone: techcorp.internal"
+gcloud dns managed-zones describe techcorp-internal --format="value(dnsName)"
+
+echo "Testing DNS records..."
+gcloud dns record-sets list --zone=techcorp-internal --format="table(name,type,ttl,rrdatas)"
+
+# Test certificate management
+echo "Testing SSL certificates..."
+gcloud compute ssl-certificates list --filter="name:techcorp" --format="table(name,managed.status,managed.domains)"
+
+# Test service discovery
+echo "Testing service registry..."
+[cols="1,1,1", options="header"]
+|===
+gcloud secrets versions access latest --secret="techcorp-service-registry" | jq '.services | keys[]'
+|===
+
+# Test security services
+echo "Testing security infrastructure..."
+echo "Security scanner service account:"
+gcloud iam service-accounts describe techcorp-security-scanner@${PROJECT_ID}.iam.gserviceaccount.com
+
+echo "Security alerts topic:"
+gcloud pubsub topics describe techcorp-security-alerts
+
+# Test backup services
+echo "Testing backup infrastructure..."
+echo "Backup bucket:"
+gsutil ls gs://${PROJECT_ID}-shared-backups
+
+echo "Backup schedule:"
+[cols="1,1,1", options="header"]
+|===
+gcloud secrets versions access latest --secret="techcorp-backup-schedule" | jq '.schedules | keys[]'
+|===
+
+echo "✓ Shared services functionality test completed"
+SHARED_TEST_END
+
+chmod +x ../scripts/test-shared-services.sh
+
+echo "✓ Shared services test script created"
+echo "Run: cd ~/gcp-landing-zone-workshop/lab-08/scripts && ./test-shared-services.sh"
+----
+
+== Expected Deliverables
+
+Upon successful completion of this lab, you should have:
+
+• Enterprise DNS infrastructure with private and public zones for service resolution
+• Automated SSL certificate management with certificate maps and auto-renewal
+• Centralized security scanning infrastructure with vulnerability assessment capabilities
+• Service discovery architecture with configuration management and service registry
+• Shared backup services with automated scheduling and lifecycle management
+• Pub/Sub-based alerting system integrated with logging infrastructure
+• Service accounts and IAM configuration for secure shared service access
+• Health check infrastructure for service monitoring and availability
+• Integration points for subsequent workload and monitoring labs
+
+== Validation and Testing
+
+=== Automated Validation
+[source,bash]
+----
+# Create comprehensive validation script
+cat > validation/validate-lab-08.sh << 'VALIDATION_SCRIPT_END'
+#!/bin/bash
+
+echo "=== Lab 08 Validation Script ==="
+echo "Started at: $(date)"
+echo "Project: $PROJECT_ID"
+echo
+
+# Source workshop configuration
+source ../../workshop-config.env
+
+validation_passed=0
+validation_failed=0
+
+# Function to check status
+check_status() {
+    if [ $1 -eq 0 ]; then
+        echo "✓ $2"
+        ((validation_passed++))
+    else
+        echo "✗ $2"
+        ((validation_failed++))
+    fi
+}
+
+# Check Day 1 prerequisites
+echo "Validating Day 1 prerequisites..."
+day1_labs=(01 02 03 04 05 06)
+for lab in "${day1_labs[@]}"; do
+    if [ -f "../../lab-$lab/outputs/lab-$lab-validation.json" ]; then
+        status=$(jq -r '.status' "../../lab-$lab/outputs/lab-$lab-validation.json")
+[cols="1,1,1", options="header"]
+|===
+        check_status $([ "$status" = "PASSED" ] && echo 0 || echo 1) "Day 1 Lab $lab prerequisite"
+|===
+    else
+        echo "✗ Day 1 Lab $lab not completed"
+        ((validation_failed++))
+    fi
+done
+
+# Check DNS zones
+echo "Checking DNS zones..."
+dns_zones=("techcorp-internal" "techcorp-public")
+for zone in "${dns_zones[@]}"; do
+    if gcloud dns managed-zones describe $zone --project=$PROJECT_ID &>/dev/null; then
+        echo "✓ DNS zone created: $zone"
+        ((validation_passed++))
+        
+        # Check DNS records
+[cols="1,1,1", options="header"]
+|===
+        record_count=$(gcloud dns record-sets list --zone=$zone --format="value(name)" | wc -l)
+|===
+        if [ $record_count -gt 2 ]; then  # More than default NS and SOA
+            echo "✓ DNS records configured for $zone"
+            ((validation_passed++))
+        else
+            echo "✗ No custom DNS records found for $zone"
+            ((validation_failed++))
+        fi
+    else
+        echo "✗ DNS zone missing: $zone"
+        ((validation_failed++))
+    fi
+done
+
+# Check SSL certificates
+echo "Checking SSL certificates..."
+[cols="1,1,1", options="header"]
+|===
+ssl_certs=$(gcloud compute ssl-certificates list --filter="name:techcorp" --format="value(name)" | wc -l)
+|===
+if [ $ssl_certs -gt 0 ]; then
+    echo "✓ SSL certificates created: $ssl_certs certificates"
+    ((validation_passed++))
+else
+    echo "✗ No SSL certificates found"
+    ((validation_failed++))
+fi
+
+# Check certificate map
+echo "Checking certificate map..."
+if gcloud certificate-manager maps describe techcorp-certificate-map --location=global --project=$PROJECT_ID &>/dev/null; then
+    echo "✓ Certificate map created"
+    ((validation_passed++))
+else
+    echo "✗ Certificate map missing"
+    ((validation_failed++))
+fi
+
+# Check security services
+echo "Checking security services..."
+security_sa="techcorp-security-scanner@${PROJECT_ID}.iam.gserviceaccount.com"
+if gcloud iam service-accounts describe $security_sa --project=$PROJECT_ID &>/dev/null; then
+    echo "✓ Security scanner service account created"
+    ((validation_passed++))
+else
+    echo "✗ Security scanner service account missing"
+    ((validation_failed++))
+fi
+
+# Check security bucket
+security_bucket="${PROJECT_ID}-security-scan-results"
+if gsutil ls gs://$security_bucket &>/dev/null; then
+    echo "✓ Security scan results bucket created"
+    ((validation_passed++))
+else
+    echo "✗ Security scan results bucket missing"
+    ((validation_failed++))
+fi
+
+# Check Pub/Sub topics
+echo "Checking Pub/Sub topics..."
+if gcloud pubsub topics describe techcorp-security-alerts --project=$PROJECT_ID &>/dev/null; then
+    echo "✓ Security alerts topic created"
+    ((validation_passed++))
+else
+    echo "✗ Security alerts topic missing"
+    ((validation_failed++))
+fi
+
+# Check secrets (service discovery and configuration)
+echo "Checking shared secrets..."
+shared_secrets=("techcorp-service-registry" "techcorp-shared-config" "techcorp-backup-schedule")
+for secret in "${shared_secrets[@]}"; do
+    if gcloud secrets describe $secret --project=$PROJECT_ID &>/dev/null; then
+        echo "✓ Secret created: $secret"
+        ((validation_passed++))
+    else
+        echo "✗ Secret missing: $secret"
+        ((validation_failed++))
+    fi
+done
+
+# Check backup services
+echo "Checking backup services..."
+backup_bucket="${PROJECT_ID}-shared-backups"
+if gsutil ls gs://$backup_bucket &>/dev/null; then
+    echo "✓ Shared backup bucket created"
+    ((validation_passed++))
+else
+    echo "✗ Shared backup bucket missing"
+    ((validation_failed++))
+fi
+
+backup_sa="techcorp-backup-manager@${PROJECT_ID}.iam.gserviceaccount.com"
+if gcloud iam service-accounts describe $backup_sa --project=$PROJECT_ID &>/dev/null; then
+    echo "✓ Backup manager service account created"
+    ((validation_passed++))
+else
+    echo "✗ Backup manager service account missing"
+    ((validation_failed++))
+fi
+
+# Check health checks
+echo "Checking health checks..."
+if gcloud compute health-checks describe techcorp-shared-services-health --global --project=$PROJECT_ID &>/dev/null; then
+    echo "✓ Shared services health check created"
+    ((validation_passed++))
+else
+    echo "✗ Shared services health check missing"
+    ((validation_failed++))
+fi
+
+# Check service accounts and IAM
+echo "Checking service accounts..."
+config_sa="techcorp-config-manager@${PROJECT_ID}.iam.gserviceaccount.com"
+if gcloud iam service-accounts describe $config_sa --project=$PROJECT_ID &>/dev/null; then
+    echo "✓ Configuration manager service account created"
+    ((validation_passed++))
+else
+    echo "✗ Configuration manager service account missing"
+    ((validation_failed++))
+fi
+
+# Test DNS resolution
+echo "Testing DNS resolution..."
+if host api.techcorp.internal 8.8.8.8 &>/dev/null; then
+    echo "✓ Internal DNS resolution working"
+    ((validation_passed++))
+else
+    echo "⚠ Internal DNS resolution test skipped (requires proper network setup)"
+fi
+
+# Check Terraform outputs
+echo "Checking Terraform outputs..."
+cd terraform
+terraform_outputs=$(terraform output -json 2>/dev/null)
+if [ $? -eq 0 ] && [ "$terraform_outputs" != "{}" ]; then
+    echo "✓ Terraform outputs available"
+    ((validation_passed++))
+    
+    # Check specific outputs
+    required_outputs=("dns_zones" "ssl_certificates" "security_services" "service_discovery" "backup_services")
+    for output in "${required_outputs[@]}"; do
+[cols="1,1,1", options="header"]
+|===
+        if echo "$terraform_outputs" | jq -e ".$output" &>/dev/null; then
+|===
+            echo "✓ Output available: $output"
+            ((validation_passed++))
+        else
+            echo "✗ Output missing: $output"
+            ((validation_failed++))
+        fi
+    done
+else
+    echo "✗ Terraform outputs not available"
+    ((validation_failed++))
+fi
+cd ..
+
+# Check integration with previous labs
+echo "Checking integration with previous labs..."
+cd terraform
+if [ -f "terraform.tfstate" ]; then
+    terraform_outputs=$(terraform output -json 2>/dev/null)
+    if [ $? -eq 0 ] && [ "$terraform_outputs" != "{}" ]; then
+        echo "✓ Lab 08 Terraform state accessible"
+        ((validation_passed++))
+    else
+        echo "✗ Lab 08 Terraform outputs not available"
+        ((validation_failed++))
+    fi
+else
+    echo "✗ Lab 08 Terraform state not found"
+    ((validation_failed++))
+fi
+cd ..
+
+# Summary
+echo
+echo "=== Validation Summary ==="
+echo "✓ Passed: $validation_passed"
+echo "✗ Failed: $validation_failed"
+echo "Total checks: $((validation_passed + validation_failed))"
+
+if [ $validation_failed -eq 0 ]; then
+    echo
+    echo "🎉 Lab 08 validation PASSED!"
+    echo "Ready to proceed to next lab."
+    
+    # Save validation results
+    cat > ../outputs/lab-08-validation.json << VALIDATION_JSON_END
+{
+  "lab": "08",
+  "status": "PASSED",
+  "timestamp": "$(date -Iseconds)",
+  "checks_passed": $validation_passed,
+  "checks_failed": $validation_failed,
+  "project_id": "$PROJECT_ID",
+  "day": 2,
+  "integration_verified": true
+}
+VALIDATION_JSON_END
+    
+    exit 0
+else
+    echo
+    echo "❌ Lab 08 validation FAILED."
+    echo "Please review and fix the issues above."
+    
+    # Save validation results
+    cat > ../outputs/lab-08-validation.json << VALIDATION_JSON_END
+{
+  "lab": "08",
+  "status": "FAILED",
+  "timestamp": "$(date -Iseconds)",
+  "checks_passed": $validation_passed,
+  "checks_failed": $validation_failed,
+  "project_id": "$PROJECT_ID",
+  "day": 2,
+  "integration_verified": false
+}
+VALIDATION_JSON_END
+    
+    exit 1
+fi
+VALIDATION_SCRIPT_END
+
+chmod +x validation/validate-lab-08.sh
+
+# Run validation
+echo "Running Lab 08 validation..."
+cd validation
+./validate-lab-08.sh
+cd ..
+----
+
+=== Manual Verification Steps
+1. _Visual Inspection_: Check GCP Console for created resources
+2. _Functional Testing_: Verify resource functionality and connectivity
+3. _Security Review_: Confirm security controls are properly configured
+4. _Integration Testing_: Verify integration with Day 1 infrastructure
+5. _Performance Testing_: Validate performance and scalability
+6. _Documentation_: Ensure all configurations are documented
+
+== Troubleshooting
+
+=== Common Issues and Solutions
+
+_Issue 1: DNS Zone Creation Issues_
+[source,bash]
+----
+# Check DNS API enablement
+gcloud services list --enabled --filter="name:dns.googleapis.com"
+
+# Verify network reference for private zones
+gcloud compute networks describe techcorp-shared-vpc --project=$PROJECT_ID
+----
+
+_Issue 2: Certificate Management Issues_
+[source,bash]
+----
+# Check Certificate Manager API enablement
+gcloud services list --enabled --filter="name:certificatemanager.googleapis.com"
+
+# Manual certificate creation
+gcloud compute ssl-certificates create techcorp-test-cert --domains=test.techcorp.internal
+----
+
+_Issue 3: Secret Manager Access Issues_
+[source,bash]
+----
+# Check Secret Manager API
+gcloud services list --enabled --filter="name:secretmanager.googleapis.com"
+
+# Test secret creation
+gcloud secrets create test-secret --data-file=<(echo "test data")
+----
+
+_Issue 4: Pub/Sub Service Issues_
+[source,bash]
+----
+# Check Pub/Sub API enablement
+gcloud services list --enabled --filter="name:pubsub.googleapis.com"
+
+# Manual topic creation
+gcloud pubsub topics create test-topic
+----
+
+=== Day 2 Specific Troubleshooting
+* _Integration Issues_: Verify Day 1 labs are completed and validated
+* _Resource Dependencies_: Check that prerequisite resources exist
+* _Permission Issues_: Ensure service accounts have required advanced permissions
+* _API Limitations_: Some advanced features may have quota or regional limitations
+
+=== Getting Help
+* _Immediate Support_: Raise hand for instructor assistance
+* _Documentation_: Reference GCP documentation and Terraform provider docs
+* _Community_: Check Stack Overflow and GCP Community forums
+* _Logs_: Review Terraform logs and GCP audit logs for error details
+
+== Lab Completion Checklist
+
+=== Technical Deliverables
+* [ ] All Terraform resources deployed successfully
+* [ ] Validation script passes all checks
+* [ ] Resources are properly tagged and labeled
+* [ ] Security best practices implemented
+* [ ] Monitoring and logging configured (where applicable)
+* [ ] Integration with Day 1 infrastructure verified
+* [ ] Performance and scalability validated
+* [ ] Documentation updated
+
+=== Knowledge Transfer
+* [ ] Understand the purpose of each component created
+* [ ] Can explain the architecture to others
+* [ ] Know how to troubleshoot common issues
+* [ ] Familiar with relevant GCP services and features
+* [ ] Understand operational procedures and maintenance
+
+=== File Organization
+* [ ] Terraform configurations saved in terraform/ directory
+* [ ] Scripts saved in scripts/ directory
+* [ ] Documentation saved in docs/ directory
+* [ ] Outputs saved in outputs/ directory
+* [ ] Validation results saved and accessible
+
+== Output Artifacts
+
+[source,bash]
+----
+# Save all lab outputs for future reference
+mkdir -p outputs
+
+# Terraform outputs
+if [ -f terraform/terraform.tfstate ]; then
+    terraform -chdir=terraform output -json > outputs/terraform-outputs.json
+    echo "✓ Terraform outputs saved"
+fi
+
+# Resource inventories (enhanced for Day 2)
+[cols="1,1,1", options="header"]
+|===
+gcloud compute instances list --format=json > outputs/compute-instances.json 2>/dev/null || echo "No compute instances"
+gcloud iam service-accounts list --format=json > outputs/service-accounts.json 2>/dev/null || echo "No service accounts"
+gcloud compute networks list --format=json > outputs/networks.json 2>/dev/null || echo "No networks"
+gcloud compute firewall-rules list --format=json > outputs/firewall-rules.json 2>/dev/null || echo "No firewall rules"
+gcloud logging sinks list --format=json > outputs/logging-sinks.json 2>/dev/null || echo "No logging sinks"
+gcloud monitoring policies list --format=json > outputs/monitoring-policies.json 2>/dev/null || echo "No monitoring policies"
+gcloud dns managed-zones list --format=json > outputs/dns-zones.json 2>/dev/null || echo "No DNS zones"
+|===
+
+# Configuration backups
+[cols="1,1,1", options="header"]
+|===
+cp -r terraform/ outputs/ 2>/dev/null || echo "No terraform directory to backup"
+cp -r scripts/ outputs/ 2>/dev/null || echo "No scripts directory to backup"
+|===
+
+# Create enhanced lab summary for Day 2
+cat > outputs/lab-08-summary.md << 'LAB_SUMMARY_END'
+# Lab 08 Summary - Day 2 Advanced Implementation
+
+## Completed: $(date)
+## Project: $PROJECT_ID
+## Participant: $LAB_USER
+## Workshop Day: 2 (Advanced Implementation)
+
+### Resources Created
+- [Advanced resources and configurations for Shared Services Implementation]
+
+### Key Learnings
+- [Advanced technical concepts and enterprise patterns]
+
+### Integration Points
+- Integration with Day 1 foundation (Labs 01-06)
+- Dependencies on previous Day 2 labs
+- Outputs for subsequent advanced labs
+
+### Next Steps
+- Proceed to Lab 09
+- Review outputs for integration with subsequent labs
+- Validate enterprise readiness
+
+### Files Generated
+$(ls -la outputs/)
+
+### Day 2 Progress
+Lab 08 of 14 completed (Day 2: Lab 2 of 8)
+LAB_SUMMARY_END
+
+echo "✓ Lab outputs and artifacts saved to outputs/ directory"
+----
+
+== Integration with Subsequent Labs
+
+=== Outputs for Next Labs
+This lab produces the following outputs that will be used in subsequent labs:
+
+[source,bash]
+----
+# Display key outputs for next labs
+if [ -f outputs/terraform-outputs.json ]; then
+    echo "Key outputs from Lab 08:"
+[cols="1,1,1", options="header"]
+|===
+    cat outputs/terraform-outputs.json | jq -r 'to_entries[] | "\(.key): \(.value.value)"'
+|===
+fi
+
+# Show integration with Day 1 foundation
+echo "Integration with Day 1 foundation:"
+for lab in 01 02 03 04 05 06; do
+    if [ -f "../lab-$lab/outputs/terraform-outputs.json" ]; then
+        echo "  ✓ Lab $lab outputs available for integration"
+    fi
+done
+----
+
+=== Dependencies for Future Labs
+* _Lab 09_: Will use [specific outputs] from this lab
+* _Integration Points_: [How this lab integrates with overall Day 2 architecture]
+* _Enterprise Readiness_: [Production deployment considerations]
+
+== Next Steps
+
+=== Immediate Next Steps
+1. _Test Service Discovery_: Verify that service endpoints are resolvable and accessible
+2. _Validate Certificate Management_: Ensure SSL certificates are properly issued and mapped
+3. _Test Security Services_: Verify security scanning and alerting infrastructure
+4. _Prepare for Lab 09_: Shared services will support workload environments
+
+=== Key Takeaways
+* _Centralized Services_: Shared infrastructure reduces operational overhead and ensures consistency
+* _Service Discovery_: Automated service registration and discovery enables microservices architectures
+* _Certificate Automation_: Automated certificate management improves security and reduces manual overhead
+* _Security Integration_: Centralized security services provide comprehensive monitoring and alerting
+
+=== Preparation for Next Lab
+1. _Ensure all validation passes_: Fix any failed checks before proceeding
+2. _Review outputs_: Understand what was created and why
+3. _Verify integration_: Confirm proper integration with Day 1 foundation
+4. _Take a break_: Complex Day 2 labs require mental breaks between sessions
+5. _Ask questions_: Clarify any concepts before moving forward
+
+'''
+
+== Additional Resources
+
+=== Documentation References
+* _GCP Documentation_: [Relevant advanced GCP service documentation]
+* _Terraform Provider_: [Advanced Terraform provider documentation]
+* _Enterprise Best Practices_: [Links to enterprise architectural best practices]
+* _Compliance Guidelines_: [Fintech compliance and regulatory guidance]
+
+=== Code Samples
+* _GitHub Repository_: [Workshop repository with complete solutions]
+* _Enterprise Reference Architectures_: [GCP enterprise reference architectures]
+* _Production Patterns_: [Real-world production implementation examples]
+
+'''
+
+_Lab 08 Complete_ ✅
+
+_Estimated Time for Completion_: 60 minutes
+_Next Lab_: Lab 09 - [Next lab title]
+
+_Day 2 Focus: Advanced enterprise implementations for production readiness_
+

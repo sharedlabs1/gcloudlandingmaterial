@@ -1,0 +1,23 @@
+# Required APIs for GCP Landing Zone Workshop
+compute.googleapis.com
+iam.googleapis.com
+cloudresourcemanager.googleapis.com
+dns.googleapis.com
+logging.googleapis.com
+monitoring.googleapis.com
+storage-api.googleapis.com
+cloudbuild.googleapis.com
+secretmanager.googleapis.com
+cloudkms.googleapis.com
+securitycenter.googleapis.com
+cloudasset.googleapis.com
+servicenetworking.googleapis.com
+container.googleapis.com
+pubsub.googleapis.com
+bigquery.googleapis.com
+cloudscheduler.googleapis.com
+cloudfunctions.googleapis.com
+dlp.googleapis.com
+binaryauthorization.googleapis.com
+containeranalysis.googleapis.com
+certificatemanager.googleapis.com
